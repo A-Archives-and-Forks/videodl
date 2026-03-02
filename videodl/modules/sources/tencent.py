@@ -10,6 +10,7 @@ import os
 import re
 import time
 import copy
+import math
 import json
 import random
 import string
@@ -28,19 +29,27 @@ from ..utils import legalizestring, searchdictbykey, useparseheaderscookies, saf
 class TencentVQQVideoClient(BaseVideoClient):
     source = 'TencentVQQVideoClient'
     class QQVideoPlatforms:
-        P10901 = '11'
-        P10801 = '10801'
-        P10201 = '10201'
+        P10901 = '11'; P10801 = '10801'; P10201 = '10201'
     class VideoURLType:
-        COVER = 'Playlist'
-        PAGE = 'EPISODE'
-    VIDEO_URL_PATS = [r'^https?://v\.qq\.com/x/cover/(\w+)\.html', r'^https?://v\.qq\.com/detail/([a-zA-Z0-9])/((?:\1)\w+)\.html', r'^https?://v\.qq\.com/x/cover/(\w+)/(\w+)\.html', r'^https?://v\.qq\.com/x/page/(\w+)\.html']
-    VIDEO_URL_PATS = [re.compile(p, re.IGNORECASE) for p in VIDEO_URL_PATS]
+        COVER = 'Playlist'; PAGE = 'EPISODE'
+    class VideoTypeCodes:
+        MOVIE = 1; TV = 2; CARTOON = 3; SPORTS = 4; ENTMT = 5; GAME = 6; DOCU = 9; VARIETY = 10; MUSIC = 22; NEWS = 23; FINANCE = 24; FASHION = 25
+        TRAVEL = 26; EDUCATION = 27; TECH = 28; AUTO = 29; HOUSE = 30; LIFE = 31; FUN = 43; BABY = 60; CHILD = 106; ART = 111
+    class VideoTypes:
+        MOVIE = "MOV"; TV = "TV"; CARTOON = "Cartoon"; SPORTS = "Sports"; ENTMT = "Ent"; GAME = "Game"; DOCU = "Docu"; VARIETY = "Variety"; MUSIC = "Music"; NEWS = "News"; FINANCE = "Finance"
+        FASHION = "Fashion"; TRAVEL = "Travel"; EDUCATION = "Edu"; TECH = "Tech"; AUTO = "Auto"; HOUSE = "House"; LIFE = "Life"; FUN = "Fun"; BABY = "Baby"; CHILD = "Child"; ART = "Art"
+    VIDEO_COVER_PREFIX = 'https://v.qq.com/x/cover/'
+    VIDEO_CONFIG_URL = 'https://vd.l.qq.com/proxyhttp'
+    VIDEO_GETPAGE_URL = "https://pbaccess.video.qq.com/trpc.vector_layout.page_view.PageService/getPage"
+    VIDEO_URL_PATS = [{'pat': r'^https?://v\.qq\.com/x/cover/(\w+)\.html', 'eg': 'https://v.qq.com/x/cover/nhtfh14i9y1egge.html'}, {'pat': r'^https?://v\.qq\.com/detail/([a-zA-Z0-9])/((?:\1)\w+)\.html', 'eg': 'https://v.qq.com/detail/n/nhtfh14i9y1egge.html'}, {'pat': r'^https?://v\.qq\.com/x/cover/(\w+)/(\w+)\.html', 'eg': 'https://v.qq.com/x/cover/nhtfh14i9y1egge/d00249ld45q.html'}, {'pat': r'^https?://v\.qq\.com/x/page/(\w+)\.html', 'eg': 'https://v.qq.com/x/page/d00249ld45q.html'}]
+    VIDEO_URL_PATS = [re.compile(p['pat'], re.IGNORECASE) for p in VIDEO_URL_PATS]
     ENCRYPTVER_to_APPVER = {'8.1': '3.5.57', '9.1': '3.5.57', '8.5': '1.27.3'}
     VQQ_TYPE_CODES = {
-        1: "MOV", 2: "TV", 3: "Cartoon", 4: "Sports", 5: "Ent", 6: "Game", 9: "Docu", 10: "Variety", 22: "Music", 23: "News",
-        24: "Finance", 25: "Fashion", 26: "Travel", 27: "Edu", 28: "Tech", 29: "Auto", 30: "House", 31: "Life", 43: "Fun",
-        60: "Baby", 106: "Child", 111: "Art",
+        VideoTypeCodes.MOVIE: VideoTypes.MOVIE, VideoTypeCodes.TV: VideoTypes.TV, VideoTypeCodes.CARTOON: VideoTypes.CARTOON, VideoTypeCodes.SPORTS: VideoTypes.SPORTS, VideoTypeCodes.ENTMT: VideoTypes.ENTMT, 
+        VideoTypeCodes.GAME: VideoTypes.GAME, VideoTypeCodes.DOCU: VideoTypes.DOCU, VideoTypeCodes.VARIETY: VideoTypes.VARIETY, VideoTypeCodes.MUSIC: VideoTypes.MUSIC, VideoTypeCodes.NEWS: VideoTypes.NEWS, 
+        VideoTypeCodes.CHILD: VideoTypes.CHILD, VideoTypeCodes.ART: VideoTypes.ART, VideoTypeCodes.FINANCE: VideoTypes.FINANCE, VideoTypeCodes.FASHION: VideoTypes.FASHION, VideoTypeCodes.TRAVEL: VideoTypes.TRAVEL, 
+        VideoTypeCodes.EDUCATION: VideoTypes.EDUCATION, VideoTypeCodes.TECH: VideoTypes.TECH, VideoTypeCodes.AUTO: VideoTypes.AUTO, VideoTypeCodes.HOUSE: VideoTypes.HOUSE, VideoTypeCodes.LIFE: VideoTypes.LIFE, 
+        VideoTypeCodes.FUN: VideoTypes.FUN, VideoTypeCodes.BABY: VideoTypes.BABY,
     }
     VQQ_FORMAT_IDS_DEFAULT = {
         QQVideoPlatforms.P10901: {'uhd': 10208, 'fhd': 10209, 'shd': 10201, 'hd': 10212, 'sd': 10203},
@@ -48,21 +57,21 @@ class TencentVQQVideoClient(BaseVideoClient):
         QQVideoPlatforms.P10201: {'uhd': 10219, 'fhd': 10218, 'shd': 10217, 'hd': 2, 'sd': 100001}
     }
     VQQ_FMT2DEFN_MAP = {10209: 'fhd', 10201: 'shd', 10212: 'hd', 10203: 'sd', 321004: 'fhd', 321003: 'shd', 321002: 'hd', 321001: 'sd', 320090: 'hd', 320089: 'sd'}
-    COVER_PAT_RE = re.compile(r"var\s+COVER_INFO\s*=\s*(.+?);?var\s+COLUMN_INFO|\"coverInfo\"\s*:\s*(.+?),\s*\"videoInfo\"", re.MULTILINE | re.DOTALL | re.IGNORECASE)
-    VIDEO_INFO_RE = re.compile(r"var\s+VIDEO_INFO\s*=\s*(.+?);?</script>|\"episodeSinglePlay\".+?\"item_params\"\s*:\s*({.+?})\s*,\s*\"\s*sub_items", re.MULTILINE | re.DOTALL | re.IGNORECASE)
-    ALL_LOADED_INFO_RE = re.compile(r"window\.__PINIA__\s*=\s*(.+?);?</script>", re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    COVER_PAT_RE = re.compile(r"var\s+COVER_INFO\s*=\s*(.+?);?var\s+COLUMN_INFO" r"|\"coverInfo\"\s*:\s*(.+?),\s*\"videoInfo\"" r"|coverInfoMap\s*:\s*{\s*\w+\s*:\s*(.+?)\s*}\s*,\s*videoInfoMap", re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    VIDEO_INFO_RE = re.compile(r"var\s+VIDEO_INFO\s*=\s*(.+?);?</script>" r"|\"episodeSinglePlay\".+?\"item_params\"\s*:\s*({.+?})\s*,\s*\"\s*sub_items" r"|videoInfoMap\s*:\s*{\s*\w+\s*:\s*(.+?)\s*}\s*,\s*initialCid", re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    ALL_LOADED_INFO_RE = re.compile(r"window\.__PINIA__\s*=\s*(.+?);?</script>" r"|_piniaState\s*:\s*(.+?)\s*,\s*isHarmonyClient", re.MULTILINE | re.DOTALL | re.IGNORECASE)
     EP_LIST_RE = re.compile(r"(?:\[{\"list\":)?Array\.prototype\.slice\.call\({\"\d+\":(?:{\"list\":\[)?\[(.+?})\]\]?,.*?\"length\":\d+}\)(?=,\"tabs\")", re.MULTILINE | re.DOTALL | re.IGNORECASE)
     PAGE_CONTEXT_RE = re.compile(r"cid=(?P<cid>[^&]+).+episode_begin=(?P<begin>\d+)&episode_end=(?P<end>\d+).+&page_size=(?P<size>\d+)", re.DOTALL | re.IGNORECASE)
+    NULLIFY_RE = re.compile(r'new\s+Map\(.*?\]\)|void\s+0|(?<=:)\s*undefined\b|(?<=:)\s*false\b|(?<=:)\s*null\b|(?<=(:|\[))\s*(?<!\\)"([^"]|\\")*?:([^"]|\\")*?(?<!\\)"', re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    DOUBLE_QUOTE_VAL_RE = re.compile(r":\s*([^,\[\]{}\"\\\s/]+)", re.DOTALL | re.IGNORECASE)
+    DOUBLE_QUOTE_KEY_RE = re.compile(r"(\w+)\s*:", re.DOTALL | re.IGNORECASE)
+    MAX_PAGETAB_REQS = 5
+    CKEY_FOR_ENCRYPT_VERION = '8.5'
+    CKEY_FOR_ENCRYPT_JS_FILE_PATH = Path(__file__).resolve().parents[2] / "modules" / "js" / "tencent" / f'vqq_ckey-{CKEY_FOR_ENCRYPT_VERION}.js'
+    APP_VERSION = ENCRYPTVER_to_APPVER[CKEY_FOR_ENCRYPT_VERION]
+    DEVICE_ID = "".join([f"{h:x}" for h in [math.floor(random.random() * 16) for _ in range(16)]])
     def __init__(self, **kwargs):
         super(TencentVQQVideoClient, self).__init__(**kwargs)
-        self.encrypt_ver = '8.5'
-        ckey_js = 'vqq_ckey-' + self.encrypt_ver + '.js'
-        here = Path(__file__).resolve()
-        project_root = here.parents[2]
-        target_dir = project_root / "modules" / "js" / "tencent"
-        self.jsfile = os.path.join(str(target_dir), ckey_js)
-        self.app_ver = self.ENCRYPTVER_to_APPVER[self.encrypt_ver]
-        self.max_pagetab_reqs = 5
         self.default_parse_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36', 
             'Accept-Encoding': 'gzip, deflate, br', 'Accept': '*/*', 'Connection': 'keep-alive'
@@ -80,6 +89,74 @@ class TencentVQQVideoClient(BaseVideoClient):
             for cookie_name in login_token: login_token.update({cookie_name: cookies.get('vqq_' + cookie_name, '')})
         login_token['main_login'] = 'qq'
         return login_token
+    '''_getvideourlsp10801'''
+    def _getvideourlsp10801(self, vid, definition, vurl, referrer, request_overrides: dict = None):
+        urls, ext, format_name, request_overrides = [], None, None, request_overrides or {}
+        params = {'vid': vid, 'defn': definition, 'otype': 'json', 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10801, 'fhdswitch': 1, 'show1080p': 1, 'dtype': 3}
+        resp = self.get('https://vv.video.qq.com/getinfo', params=params, **request_overrides)
+        if (not resp) or (resp.status_code not in {200}): return format_name, ext, urls
+        try: data: dict = json.loads(resp.text[len('QZOutputJson='): -1])
+        except json.JSONDecodeError: return format_name, ext, urls
+        if not (data and data.get('dltype')): return format_name, ext, urls
+        url_prefixes: list[str] = [url for d in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []) if isinstance(d, dict) and (url := d.get('url'))]
+        chosen_url_prefixes = [prefix for prefix in url_prefixes if prefix[:prefix.find('/', 8)].endswith('.tc.qq.com')]
+        if not chosen_url_prefixes: chosen_url_prefixes = url_prefixes
+        chosen_url_prefixes += [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
+        drm, preview = safeextractfromdict(data, ['vl', 'vi', 0, 'drm'], None), data.get('preview')
+        formats = {str(fmt.get('id')): fmt.get('name') for fmt in safeextractfromdict(data, ['fl', 'fi'], [])}
+        keyid = safeextractfromdict(data, ['vl', 'vi', 0, 'keyid'], ''); format_id = keyid.split('.')[-1]; ret_defn = formats.get(format_id)
+        ret_defn = ret_defn or (definition if definition in (fmt_names := list(formats.values())) else next((d for d in TencentVQQVideoClient.VQQ_FORMAT_IDS_DEFAULT[TencentVQQVideoClient.QQVideoPlatforms.P10801] if d in fmt_names), definition))
+        vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], ''); vfn = vfilename.rpartition('.'); ext = vfn[-1]
+        fc = safeextractfromdict(data, ['vl', 'vi', 0, 'fc'], None); start = 0 if fc == 0 else 1
+        if ext == 'ts':
+            if drm == 1 and not preview and not self.default_cookies: return format_name, ext, urls
+            urls.extend('\t'.join(f'{prefix}{vfn[0]}.{idx}.ts?sdtfrom=v1010' for prefix in chosen_url_prefixes) for idx in range(start, fc + 1))
+        else:
+            if drm == 1 and not self.default_cookies: return format_name, ext, urls
+            if safeextractfromdict(data, ['vl', 'vi', 0, 'logo'], None) == 0:
+                playlist_m3u8, ext = safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui', -1, 'hls', 'pname'], None), 'ts'
+                if not playlist_m3u8: return self._getvideourlsp10201(vid, definition, vurl, referrer, request_overrides)
+                resp = self.get(chosen_url_prefixes[0] + playlist_m3u8, **request_overrides)
+                if resp and resp.status_code in {200}: resp.encoding = 'utf-8'; urls.extend('\t'.join(f'{p}{vfilename}/{line}' for p in chosen_url_prefixes) for line in resp.iter_lines(decode_unicode=True) if line and not str(line).startswith('#'))
+            else:
+                return self._getvideourlsp10201(vid, definition, vurl, referrer, request_overrides)
+        format_name = ret_defn
+        return format_name, ext, urls
+    '''_getvideourlsp10901'''
+    def _getvideourlsp10901(self, vid, definition, request_overrides: dict = None):
+        urls, ext, format_name, request_overrides = [], None, None, request_overrides or {}
+        params = {'isHLS': False, 'charge': 0, 'vid': vid, 'defn': definition, 'defnpayver': 1, 'otype': 'json', 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10901, 'sdtfrom': 'v1010', 'host': 'v.qq.com', 'fhdswitch': 0, 'show1080p': 1}
+        resp = self.get('https://h5vv.video.qq.com/getinfo', params=params, **request_overrides)
+        if (not resp) or (resp.status_code not in {200}): return format_name, ext, urls
+        try: data: dict = json.loads(resp.text[len('QZOutputJson='):-1])
+        except json.JSONDecodeError: return format_name, ext, urls
+        if not (data and data.get('dltype')): return format_name, ext, urls
+        url_prefixes: list[str] = [url for d in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []) if isinstance(d, dict) and (url := d.get('url'))]
+        chosen_url_prefixes = [prefix for prefix in url_prefixes if prefix[:prefix.find('/', 8)].endswith('.tc.qq.com')]
+        if not chosen_url_prefixes: chosen_url_prefixes = url_prefixes
+        chosen_url_prefixes += [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
+        formats = {fmt.get('name'): fmt.get('id') for fmt in safeextractfromdict(data, ['fl', 'fi'], [])}
+        ret_defn = definition if definition in formats else next((d for d in TencentVQQVideoClient.VQQ_FORMAT_IDS_DEFAULT[TencentVQQVideoClient.QQVideoPlatforms.P10901] if d in formats), definition)
+        format_id = formats.get(ret_defn) or TencentVQQVideoClient.VQQ_FORMAT_IDS_DEFAULT[TencentVQQVideoClient.QQVideoPlatforms.P10901][ret_defn]
+        vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], '')
+        vfn = vfilename.split('.'); ext = vfn[-1]; vfmt_new = vfn[1][0] + str(format_id % 10000) if len(vfn) == 3 else ''
+        fvkey, fc = safeextractfromdict(data, ['vl', 'vi', 0, 'fvkey'], None), safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'fc'], None)
+        keyids: list[str] = [chap.get('keyid') for chap in safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'ci'], [])] if fc else [safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'keyid'], [])]
+        for keyid in keyids:
+            keyid_new = keyid.split('.')
+            if len(keyid_new) == 3: keyid_new[1] = vfmt_new; keyid_new = '.'.join(keyid_new)
+            else: keyid_new = '.'.join(vfn[:-1])
+            resp = self.get('https://h5vv.video.qq.com/getkey', params={'otype': 'json', 'vid': vid, 'format': format_id, 'filename': f"{keyid_new}.{ext}", 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10901, 'vt': 217, 'charge': 0}, **request_overrides)
+            if resp and resp.status_code in {200}:
+                try: key_data = json.loads(resp.text[len('QZOutputJson='):-1])
+                except json.JSONDecodeError: return format_name, ext, urls
+                if key_data and isinstance(key_data, dict):
+                    vkey = key_data.get('key', fvkey)
+                    if not vkey: return format_name, ext, urls
+                    url_mirrors = '\t'.join(['%s%s?sdtfrom=v1010&vkey=%s' % (url_prefix, f"{keyid_new}.{ext}", vkey) for url_prefix in chosen_url_prefixes])
+                    if url_mirrors: urls.append(url_mirrors)
+        if len(keyids) == len(urls): format_name = ret_defn
+        return format_name, ext, urls
     '''_getorigformatid'''
     def _getorigformatid(self, data, platform):
         file_format_id, vfilefs = None, safeextractfromdict(data, ['vl', 'vi', 0, 'fs'], None)
@@ -87,124 +164,69 @@ class TencentVQQVideoClient(BaseVideoClient):
             for fmt in safeextractfromdict(data, ['fl', 'fi'], []):
                 if not isinstance(fmt, dict): continue
                 if vfilefs == fmt.get('fs'): file_format_id = fmt.get('id'); break
-        if not file_format_id: file_format_id = safeextractfromdict(data, ['fl', 'fi', 0, 'id'], None) or self.VQQ_FORMAT_IDS_DEFAULT[platform]['sd']
+        if not file_format_id: file_format_id = safeextractfromdict(data, ['fl', 'fi', 0, 'id'], None) or TencentVQQVideoClient.VQQ_FORMAT_IDS_DEFAULT[platform]['sd']
         return file_format_id
     '''_pickhighestdefinition'''
     def _pickhighestdefinition(self, defns):
-        for definition in ('dolby', 'sfr_hdr', 'hdr10', 'uhd', 'fhd', 'shd', 'hd', 'sd'):
+        for definition in ('suhd', 'uhd', 'dolby', 'hdr10', 'fhd', 'shd', 'hd', 'sd'):
             if definition in defns: return definition
     '''_sortdefinitions'''
     def _sortdefinitions(self, defns, reverse=True):
-        sorted_defns = []
-        full_defns = ('dolby', 'sfr_hdr', 'hdr10', 'uhd', 'fhd', 'shd', 'hd', 'sd') if reverse else ('dolby', 'sfr_hdr', 'hdr10', 'uhd', 'fhd', 'shd', 'hd', 'sd')[::-1]
+        sorted_defns, full_defns = [], ('suhd', 'uhd', 'dolby', 'hdr10', 'fhd', 'shd', 'hd', 'sd') if reverse else ('suhd', 'uhd', 'dolby', 'hdr10', 'fhd', 'shd', 'hd', 'sd')[::-1]
         for defn in full_defns:
             if defn in defns: sorted_defns.append(defn)
         return sorted_defns
-    '''_geteplist'''
-    def _geteplist(self, r_text):
-        conf_info, ep_list, tabs = {}, [], []
-        match = self.ALL_LOADED_INFO_RE.search(r_text)
-        if not match: return conf_info, ep_list, tabs
-        matched = match.group(1)
-        matched_norm = re.sub(self.EP_LIST_RE, r'[{"list":[[\1]]', matched).replace('undefined', 'null')
-        try: conf_info = json_repair.loads(matched_norm)
-        except: return conf_info, ep_list, tabs
-        if conf_info:
-            ep_list = safeextractfromdict(conf_info, ['episodeMain', 'listData', 0, 'list'], [])
-            if ep_list: ep_list = ep_list[0]
-            tabs = safeextractfromdict(conf_info, ['episodeMain', 'listData', 0, 'tabs'], [])
-        return conf_info, ep_list, tabs
     '''_getvideourlsp10201'''
     def _getvideourlsp10201(self, vid, definition, vurl, referrer, request_overrides: dict = None):
         urls, ext, format_name, request_overrides = [], None, None, request_overrides or {}
-        with subprocess.Popen(['node', self.jsfile], bufsize=1, universal_newlines=True, encoding='utf-8', stdin=subprocess.PIPE, stdout=subprocess.PIPE) as node_proc:
-            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, self.app_ver, vid, vurl, referrer])
-            node_proc.stdin.write(ckey_req)
-            node_proc.stdin.write(r'\n')
-            node_proc.stdin.flush()
-            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n')
-            ckey, tm, guid, flowid = ckey_resp.split()
+        cmd_nodejs = ['node', TencentVQQVideoClient.CKEY_FOR_ENCRYPT_JS_FILE_PATH]
+        with subprocess.Popen(cmd_nodejs, bufsize=1, universal_newlines=True, encoding='utf-8', stdin=subprocess.PIPE, stdout=subprocess.PIPE) as node_proc:
+            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, TencentVQQVideoClient.APP_VERSION, vid, vurl, referrer])
+            node_proc.stdin.write(ckey_req); node_proc.stdin.write(r'\n'); node_proc.stdin.flush()
+            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n'); ckey, tm, guid, flowid = ckey_resp.split()
             vinfoparam = {
-                'otype': 'ojson', 'isHLS': 1, 'charge': 0, 'fhdswitch': 0, 'show1080p': 1, 'defnpayver': 7, 'sdtfrom': 'v1010', 'host': 'v.qq.com', 'vid': vid, 
-                'defn': definition, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': self.app_ver, 'refer': referrer, 'ehost': vurl, 
-                'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': self.encrypt_ver, 'guid': guid, 
-                'flowid': flowid, 'tm': tm, 'cKey': ckey, 'dtype': 1,
+                'otype': 'ojson', 'isHLS': 1, 'charge': 0, 'fhdswitch': 0, 'show1080p': 1, 'defnpayver': 7, 'sdtfrom': 'v1010', 'host': 'v.qq.com', 'vid': vid, 'defn': definition, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': TencentVQQVideoClient.APP_VERSION, 
+                'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': TencentVQQVideoClient.CKEY_FOR_ENCRYPT_VERION, 'guid': guid, 'flowid': flowid, 'tm': tm, 'cKey': ckey, 'dtype': 1,
             }
             params = {'buid': 'vinfoad', 'vinfoparam': urlencode(vinfoparam)}
             try:
-                resp = self.post('https://vd.l.qq.com/proxyhttp', json=params, **request_overrides)
-                resp.raise_for_status()
-                try:
-                    data: dict = json_repair.loads(resp.text)
-                    if data: data = json_repair.loads(data.get('vinfo'))
-                except:
-                    return format_name, ext, urls
-                if not data or not data.get('dltype'): return format_name, ext, urls
-                url_prefixes: list[str] = []
-                for url_dic in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []):
-                    if isinstance(url_dic, dict):
-                        url = url_dic.get('url')
-                        if url: url_prefixes.append(url)
+                (resp := self.post(TencentVQQVideoClient.VIDEO_CONFIG_URL, json=params, **request_overrides)).raise_for_status()
+                try: data: dict = (d := json.loads(resp.text)) and json.loads(d.get('vinfo'))
+                except json.JSONDecodeError as e: return format_name, ext, urls
+                if not (data and data.get('dltype')): return format_name, ext, urls
+                url_prefixes: list[str] = [url for d in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []) if isinstance(d, dict) and (url := d.get('url'))]
                 chosen_url_prefixes = [prefix for prefix in url_prefixes if prefix[:prefix.find('/', 8)].endswith('.tc.qq.com')]
                 if not chosen_url_prefixes: chosen_url_prefixes = url_prefixes
-                cdn = [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
-                chosen_url_prefixes += cdn
+                chosen_url_prefixes += [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
                 formats = {fmt.get('name'): fmt.get('id') for fmt in safeextractfromdict(data, ['fl', 'fi'], [])}
-                ret_defn = definition
-                if ret_defn not in formats: ret_defn = self._pickhighestdefinition(formats)
-                new_format_id = formats.get(ret_defn) or self.VQQ_FORMAT_IDS_DEFAULT[TencentVQQVideoClient.QQVideoPlatforms.P10201][ret_defn]
-                vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], '')
-                vfn = vfilename.split('.')
-                ext = vfn[-1]
-                fmt_prefix = vfn[1][0] if len(vfn) == 3 else 'p'
-                vfmt_new = fmt_prefix + str(new_format_id % 10000)
+                ret_defn = definition if definition in formats else self._pickhighestdefinition(formats)
+                new_format_id = formats.get(ret_defn) or TencentVQQVideoClient.VQQ_FORMAT_IDS_DEFAULT[TencentVQQVideoClient.QQVideoPlatforms.P10201][ret_defn]
+                vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], ''); vfn = vfilename.split('.'); ext = vfn[-1]
+                fmt_prefix = vfn[1][0] if len(vfn) == 3 else 'p'; vfmt_new = fmt_prefix + str(new_format_id % 10000)
                 orig_format_id = self._getorigformatid(data, TencentVQQVideoClient.QQVideoPlatforms.P10201)
                 fc = safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'fc'], None)
                 keyid: str = safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'ci', 0, 'keyid'], None) if fc else safeextractfromdict(data, ['vl', 'vi', 0, 'cl', 'keyid'], None)
-                keyid = keyid.split('.')
-                keyid[1] = str(orig_format_id)
-                keyid, max_fc = '.'.join(keyid), 80
+                keyid = keyid.split('.'); keyid[1] = str(orig_format_id); keyid = '.'.join(keyid); max_fc = 80
                 for idx in range(1, max_fc + 1):
-                    keyid_new = keyid.split('.')
-                    keyid_new[0] = vfn[0]
-                    if len(keyid_new) == 3:
-                        keyid_new[1:] = [vfmt_new, str(idx)]
-                        keyid_new = '.'.join(keyid_new)
-                    else:
-                        if int(keyid_new[1]) != new_format_id:
-                            if len(vfn) == 3: vfn[1] = vfn[1][0] + str(new_format_id)
-                            else: vfn.insert(1, vfmt_new)
-                        keyid_new = '.'.join(vfn[:-1])
-                    cfilename = keyid_new + '.' + ext
-                    ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, self.app_ver, vid, vurl, referrer, r'\n'])
-                    node_proc.stdin.write(ckey_req)
-                    node_proc.stdin.flush()
-                    ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n')
-                    ckey, tm, guid, flowid = ckey_resp.split()
-                    vkeyparam = {
-                        'otype': 'ojson', 'vid': vid, 'format': new_format_id, 'filename': cfilename, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': self.app_ver, 'sdtfrom': 'v1010', 'guid': guid, 
-                        'flowid': flowid, 'tm': tm, 'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': self.encrypt_ver, 'cKey': ckey
-                    }
+                    keyid_new = keyid.split('.'); keyid_new[0] = vfn[0]
+                    if len(keyid_new) == 3: keyid_new = '.'.join([keyid_new[0], vfmt_new, str(idx)])
+                    else: (int(keyid_new[1]) != new_format_id) and (vfn.__setitem__(1, vfn[1][0] + str(new_format_id)) if len(vfn) == 3 else vfn.insert(1, vfmt_new)); keyid_new = '.'.join(vfn[:-1])
+                    cfilename = f"{keyid_new}.{ext}"; ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, TencentVQQVideoClient.APP_VERSION, vid, vurl, referrer, r'\n'])
+                    node_proc.stdin.write(ckey_req); node_proc.stdin.flush()
+                    ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n'); ckey, tm, guid, flowid = ckey_resp.split()
+                    vkeyparam = {'otype': 'ojson', 'vid': vid, 'format': new_format_id, 'filename': cfilename, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': TencentVQQVideoClient.APP_VERSION, 'sdtfrom': 'v1010', 'guid': guid, 'flowid': flowid, 'tm': tm, 'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': TencentVQQVideoClient.CKEY_FOR_ENCRYPT_VERION, 'cKey': ckey}
                     params = {'buid': 'onlyvkey', 'vkeyparam': urlencode(vkeyparam)}
                     try:
-                        resp = self.post('https://vd.l.qq.com/proxyhttp', json=params, **request_overrides)
-                        resp.raise_for_status()
-                        try:
-                            key_data: dict = json_repair.loads(resp.text)
-                            if key_data: key_data = json_repair.loads(key_data.get('vkey'))
-                        except:
-                            return format_name, ext, urls
+                        (resp := self.post(TencentVQQVideoClient.VIDEO_CONFIG_URL, json=params, **request_overrides)).raise_for_status()
+                        try: key_data: dict = (d := json.loads(resp.text)) and json.loads(d.get('vkey'))
+                        except json.JSONDecodeError: return format_name, ext, urls
                         if key_data and isinstance(key_data, dict):
-                            vkey = key_data.get('key')
-                            if not vkey: break
-                            keyid = key_data.get('keyid')
-                            keyid_nseg = len(keyid.split('.'))
-                            if key_data.get('filename'):
-                                if keyid_nseg == 3: cfilename = key_data.get('filename').split('.'); cfilename.insert(-1, str(idx)); cfilename = '.'.join(cfilename)
-                                else: cfilename = key_data.get('filename')
-                            url_mirrors = '\t'.join([f'{url_prefix}{cfilename}?sdtfrom=v1010&vkey={vkey}' for url_prefix in chosen_url_prefixes])
+                            if not key_data.get('key'): break
+                            keyid = key_data.get('keyid'); keyid_nseg = len(keyid.split('.'))
+                            if (fn := key_data.get('filename')): cfilename = ('.'.join((p := fn.split('.'))[:-1] + [str(idx), p[-1]]) if keyid_nseg == 3 else fn)
+                            url_mirrors = '\t'.join(['%s%s?sdtfrom=v1010&vkey=%s' % (url_prefix, cfilename, key_data.get('key')) for url_prefix in chosen_url_prefixes])
                             if url_mirrors: urls.append(url_mirrors)
-                            if (fc == idx) or (not fc and keyid_nseg != 3): break
+                            if fc == idx or (not fc and keyid_nseg != 3): break
                     except:
                         return format_name, ext, urls
                 if len(urls) > 0: format_name = ret_defn
@@ -213,187 +235,177 @@ class TencentVQQVideoClient(BaseVideoClient):
     '''_getvideourlsp10201ts'''
     def _getvideourlsp10201ts(self, vid, definition, vurl, referrer, request_overrides: dict = None):
         urls, ext, format_name, request_overrides = [], None, None, request_overrides or {}
-        with subprocess.Popen(['node', self.jsfile], bufsize=1, universal_newlines=True, encoding='utf-8', stdin=subprocess.PIPE, stdout=subprocess.PIPE) as node_proc:
-            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, self.app_ver, vid, vurl, referrer])
-            node_proc.stdin.write(ckey_req)
-            node_proc.stdin.write(r'\n')
-            node_proc.stdin.flush()
-            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n')
-            ckey, tm, guid, flowid = ckey_resp.split()
+        cmd_nodejs = ['node', TencentVQQVideoClient.CKEY_FOR_ENCRYPT_JS_FILE_PATH]
+        with subprocess.Popen(cmd_nodejs, bufsize=1, universal_newlines=True, encoding='utf-8', stdin=subprocess.PIPE, stdout=subprocess.PIPE) as node_proc:
+            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, TencentVQQVideoClient.APP_VERSION, vid, vurl, referrer])
+            node_proc.stdin.write(ckey_req); node_proc.stdin.write(r'\n'); node_proc.stdin.flush()
+            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n'); ckey, tm, guid, flowid = ckey_resp.split()
             vinfoparam = {
-                'otype': 'ojson', 'isHLS': 1, 'charge': 0, 'fhdswitch': 0, 'show1080p': 1, 'defnpayver': 7, 'sdtfrom': 'v1010', 'host': 'v.qq.com', 'vid': vid,
-                'defn': definition, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': self.app_ver, 'refer': referrer, 'ehost': vurl,
-                'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': self.encrypt_ver,
-                'guid': guid, 'flowid': flowid, 'tm': tm, 'cKey': ckey, 'dtype': 3, 'spau': 1, 'spaudio': 68, 'spwm': 1, 'sphls': 2, 'sphttps': 1, 'clip': 4,
-                'spsrt': 2, 'spvvpay': 1, 'spadseg': 3, 'spav1': 15, 'hevclv': 28, 'spsfrhdr': 100, 'spvideo': 1044,
+                'otype': 'ojson', 'isHLS': 1, 'charge': 0, 'fhdswitch': 0, 'show1080p': 1, 'defnpayver': 7, 'sdtfrom': 'v1010', 'host': 'v.qq.com', 'vid': vid, 'defn': definition, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': TencentVQQVideoClient.APP_VERSION,
+                'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': TencentVQQVideoClient.CKEY_FOR_ENCRYPT_VERION, 'guid': guid, 'flowid': flowid, 'tm': tm, 'cKey': ckey, 'dtype': 3,
+                'spau': 1, 'spaudio': 68, 'spwm': 1, 'sphls': 2, 'sphttps': 1, 'clip': 4, 'spsrt': 2, 'spvvpay': 1, 'spadseg': 3, 'spav1': 15, 'hevclv': 28, 'spsfrhdr': 100, 'spvideo': 1044,
             }
             params = {'buid': 'vinfoad', 'vinfoparam': urlencode(vinfoparam)}
             try:
-                resp = self.post('https://vd.l.qq.com/proxyhttp', json=params, **request_overrides)
-                resp.raise_for_status()
-                try:
-                    data: dict = json_repair.loads(resp.text)
-                    if data: data = json_repair.loads(data.get('vinfo'))
-                except:
-                    return format_name, ext, urls
-                if not data or not data.get('dltype'): return format_name, ext, urls
-                url_prefixes: list[str] = []
-                for url_dic in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []):
-                    if isinstance(url_dic, dict):
-                        url: str = url_dic.get('url', '')
-                        if not url: continue
-                        if not url.endswith('/'): url = url[:url.rfind('/')+1]
-                        url_prefixes.append(url)
+                (resp := self.post(TencentVQQVideoClient.VIDEO_CONFIG_URL, json=params, **request_overrides)).raise_for_status()
+                try: data: dict = (d := json.loads(resp.text)) and json.loads(d.get('vinfo'))
+                except json.JSONDecodeError as e: return format_name, ext, urls
+                if not (data and data.get('dltype')): return format_name, ext, urls
+                url_prefixes = [(u if u.endswith('/') else u[:u.rfind('/') + 1]) for d in safeextractfromdict(data, ['vl', 'vi', 0, 'ul', 'ui'], []) if isinstance(d, dict) and (u := d.get('url'))]
                 chosen_url_prefixes = [prefix for prefix in url_prefixes if prefix[:prefix.find('/', 8)].endswith('.tc.qq.com')]
                 if not chosen_url_prefixes: chosen_url_prefixes = url_prefixes
-                cdn = [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
-                chosen_url_prefixes += cdn
-                drm = safeextractfromdict(data, ['vl', 'vi', 0, 'drm'], None)
-                preview = data.get('preview')
+                chosen_url_prefixes += [prefix for prefix in url_prefixes if prefix not in chosen_url_prefixes]
+                drm, preview = safeextractfromdict(data, ['vl', 'vi', 0, 'drm'], None), data.get('preview')
                 formats_id2nm = {fmt.get('id'): fmt.get('name') for fmt in safeextractfromdict(data, ['fl', 'fi'], [])}
                 formats_nm2id = {fmt_nm: fmt_id for fmt_id, fmt_nm in formats_id2nm.items()}
-                keyid = safeextractfromdict(data, ['vl', 'vi', 0, 'keyid'], '')
-                vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], '')
-                vfn = vfilename.rpartition('.')
-                ext, ret_defn = vfn[-1], ''
+                keyid = safeextractfromdict(data, ['vl', 'vi', 0, 'keyid'], ''); vfilename = safeextractfromdict(data, ['vl', 'vi', 0, 'fn'], '')
+                vfn = vfilename.rpartition('.'); ext = vfn[-1]; ret_defn = ''
                 if ext == 'ts':
                     if drm == 1 and not preview and not self.default_cookies: return format_name, ext, urls
                     key_format_id = keyid.split('.')[-1]
-                    try:
-                        key_format_id = int(key_format_id)
-                        ret_defn = formats_id2nm.get(key_format_id) or ret_defn
-                    except ValueError:
-                        pass
+                    try: key_format_id = int(key_format_id); ret_defn = formats_id2nm.get(key_format_id) or ret_defn
+                    except ValueError: pass
                     if not ret_defn:
                         for format_defn in self._sortdefinitions(formats_nm2id):
                             format_id = formats_nm2id.get(format_defn)
-                            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, self.app_ver, vid, vurl, referrer, r'\n'])
-                            node_proc.stdin.write(ckey_req)
-                            node_proc.stdin.flush()
-                            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n')
-                            ckey, tm, guid, flowid = ckey_resp.split()
-                            vkeyparam = {
-                                'otype': 'ojson', 'vid': vid, 'format': format_id, 'filename': vfilename, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': self.app_ver,
-                                'sdtfrom': 'v1010', 'guid': guid, 'flowid': flowid, 'tm': tm, 'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')),
-                                'encryptVer': self.encrypt_ver, 'cKey': ckey
-                            }
+                            ckey_req = ' '.join([TencentVQQVideoClient.QQVideoPlatforms.P10201, TencentVQQVideoClient.APP_VERSION, vid, vurl, referrer, r'\n'])
+                            node_proc.stdin.write(ckey_req); node_proc.stdin.flush()
+                            ckey_resp = node_proc.stdout.readline().rstrip(r'\r\n'); ckey, tm, guid, flowid = ckey_resp.split()
+                            vkeyparam = {'otype': 'ojson', 'vid': vid, 'format': format_id, 'filename': vfilename, 'platform': TencentVQQVideoClient.QQVideoPlatforms.P10201, 'appVer': TencentVQQVideoClient.APP_VERSION, 'sdtfrom': 'v1010', 'guid': guid, 'flowid': flowid, 'tm': tm, 'refer': referrer, 'ehost': vurl, 'logintoken': json.dumps(self._getlogintokenfromcookies(self.default_cookies), separators=(',', ':')), 'encryptVer': TencentVQQVideoClient.CKEY_FOR_ENCRYPT_VERION, 'cKey': ckey}
                             params = {'buid': 'onlyvkey', 'vkeyparam': urlencode(vkeyparam)}
                             try:
-                                resp = self.post('https://vd.l.qq.com/proxyhttp', json=params, **request_overrides)
-                                resp.raise_for_status()
-                                try:
-                                    key_data: dict = json_repair.loads(resp.text)
-                                    if key_data: key_data = json_repair.loads(key_data.get('vkey'))
-                                except:
-                                    return format_name, ext, urls
+                                (resp := self.post(TencentVQQVideoClient.VIDEO_CONFIG_URL, json=params, **request_overrides)).raise_for_status()
+                                try: key_data: dict = (d := json.loads(resp.text)) and json.loads(d.get('vkey'))
+                                except json.JSONDecodeError: return format_name, ext, urls
                                 if key_data and isinstance(key_data, dict):
-                                    vkey = key_data.get('key')
-                                    if not vkey: return format_name, ext, urls
-                                    cfilename = key_data.get('filename', '')
-                                    if cfilename and cfilename == vfilename: ret_defn = format_defn; break
+                                    if not key_data.get('key'): return format_name, ext, urls
+                                    if key_data.get('filename', '') and key_data.get('filename', '') == vfilename: ret_defn = format_defn; break
                             except:
                                 return format_name, ext, urls
-                    for idx in range(1, safeextractfromdict(data, ['vl', 'vi', 0, 'fc'], None) + 1):
-                        vfilename_new = '.'.join([vfn[0], str(idx), 'ts'])
-                        url_mirrors = '\t'.join([f'{prefix}{vfilename_new}?sdtfrom=v1010' for prefix in chosen_url_prefixes])
-                        urls.append(url_mirrors)
+                    fc = safeextractfromdict(data, ['vl', 'vi', 0, 'fc'], None); start = 1
+                    for idx in range(start, fc + 1): vfilename_new = '.'.join([vfn[0], str(idx), 'ts']); url_mirrors = '\t'.join(['%s%s?sdtfrom=v1010' % (prefix, vfilename_new) for prefix in chosen_url_prefixes]); urls.append(url_mirrors)
                 else:
                     if drm == 1 and not self.default_cookies: return format_name, ext, urls
                     return self._getvideourlsp10201(vid, definition, vurl, referrer, request_overrides)
                 format_name = ret_defn
             except: pass
         return format_name, ext, urls
-    '''_extractvideocoverinfo'''
-    def _extractvideocoverinfo(self, regex: re.Pattern, text: str):
-        result, cover_match = (None, None), regex.search(text)
-        if not cover_match: return result
-        info, cover_group = {}, cover_match.group(1) or cover_match.group(2)
-        try: cover_info = json_repair.loads(cover_group.replace('undefined', 'null'))
-        except: return result
-        if not cover_info or not isinstance(cover_info, dict): return result
-        info['title'] = cover_info.get('title', '') or cover_info.get('title_new', '')
-        info['year'] = cover_info.get('year') or (cover_info.get('publish_date') or '').split('-')[0]
-        info['cover_id'] = cover_info.get('cover_id', '')
-        info['episode_all'] = int(cover_info.get('episode_all') or 0)
-        type_id = int(cover_info.get('type') or '1')
-        info['type'] = self.VQQ_TYPE_CODES.get(type_id, 'MOV')
-        video_id = cover_info.get('vid')
-        if video_id is None:
-            video_ids = cover_info.get('video_ids') or []
-            normal_ids = [{'V': vid, 'E': ep, 'defns': {}} for ep, vid in enumerate(video_ids, start=1)]
-        else:
-            normal_ids = [{'V': video_id, 'E': 1, 'defns': {}}]
-        info['normal_ids'] = normal_ids
-        result = (info, cover_match.end())
-        return result
-    '''_updatevideocoverinfo'''
-    def _updatevideocoverinfo(self, cover_info, r_text, url_type, request_overrides: dict = None):
-        request_overrides = request_overrides or {}
-        def _updatefromeplist(normal_ids, ep_list, vid2idx):
-            for epv in ep_list:
-                vi = normal_ids[vid2idx[epv['vid']]]
-                vi['E'] = int(epv['title'])
-        def _aligneps(normal_ids, start, stop, shift):
-            for idx in range(start, stop): normal_ids[idx]['E'] += shift
-        conf_info, selected_ep_list, tabs = self._geteplist(r_text)
-        if not conf_info: return
-        year = safeextractfromdict(conf_info, ['introduction', 'introData', 'list', 0, 'item_params', 'year'], None) or \
-               safeextractfromdict(conf_info, ['introduction', 'introData', 'list', 0, 'item_params', 'show_year'], None)
-        if year and (not cover_info['year'] or cover_info['year'] != year): cover_info['year'] = year
-        if len(selected_ep_list) >= len(cover_info['normal_ids']):
-            cover_info['normal_ids'] = [
-                {'V': item['vid'], 'E': ep, 'defns': {}, 'title': item.get('playTitle') or item.get('title', '') if cover_info['type'] not in ["TV", ] else ''} for ep, item in enumerate(selected_ep_list, start=1)
-            ]
-        if not cover_info['year'] and selected_ep_list: cover_info['year'] = (selected_ep_list[0].get('publishDate') or '').split('-')[0]
-        if not cover_info['episode_all'] or cover_info['episode_all'] == len(cover_info['normal_ids']) or not selected_ep_list[0].get('title', '').isdecimal(): return
-        v2i = {vi['V']: idx for idx, vi in enumerate(cover_info['normal_ids'])}
-        if (url_type == TencentVQQVideoClient.VideoURLType.PAGE) or not tabs: _updatefromeplist(cover_info['normal_ids'], selected_ep_list, v2i); return
-        delay_request, ep, shift = SpinWithBackoff(), 0, 0
-        for tab in sorted(tabs, key=lambda tab: int(tab['text'].split('-')[0])):
-            page_context = self.PAGE_CONTEXT_RE.search(tab['pageContext'])
-            if not page_context: return
-            cid, size = page_context.group('cid'), int(page_context.group('size'))
-            if tab['isSelected']: _updatefromeplist(cover_info['normal_ids'], selected_ep_list, v2i)
-            else:
-                if url_type != TencentVQQVideoClient.VideoURLType.COVER: _aligneps(cover_info['normal_ids'], ep, ep + size, shift)
-                else:
-                    if delay_request.nth > (self.max_pagetab_reqs - 1): _aligneps(cover_info['normal_ids'], ep, len(cover_info['normal_ids']), shift); return
-                    delay_request.sleep()
-                    req_url = 'https://v.qq.com/x/cover/' + cid + '/' + cover_info['normal_ids'][ep]['V'] + '.html'
-                    try:
-                        resp = self.get(req_url, **request_overrides)
-                        resp.raise_for_status()
-                        resp.encoding = 'utf-8'
-                        _, ep_list, _ = self._geteplist(resp.text)
-                        if not ep_list: _aligneps(cover_info['normal_ids'], ep, len(cover_info['normal_ids']), shift); return
-                        _updatefromeplist(cover_info['normal_ids'], ep_list, v2i)
-                    except:
-                        _aligneps(cover_info['normal_ids'], ep, len(cover_info['normal_ids']), shift)
-                        return
-            ep += size
-            shift = cover_info['normal_ids'][ep-1]['E'] - ep
-    '''_parsebasicinfo'''
-    def _parsebasicinfo(self, cover_url, url_type, request_overrides: dict = None):
-        request_overrides = request_overrides or {}
-        resp = self.get(cover_url, **request_overrides)
-        resp.raise_for_status()
-        resp.encoding = 'utf-8'
-        info, pos_end = self._extractvideocoverinfo(self.COVER_PAT_RE, resp.text)
-        if info:
-            if not info['normal_ids']: info, _ = self._extractvideocoverinfo(self.VIDEO_INFO_RE, resp.text[pos_end:])
-        else:
-            info, _ = self._extractvideocoverinfo(self.VIDEO_INFO_RE, resp.text)
-        if info:
-            self._updatevideocoverinfo(info, resp.text, url_type, request_overrides)
-            if not info['episode_all']: info['episode_all'] = len(info['normal_ids']) if info['normal_ids'] else 1
-            info['referrer'] = cover_url
-        return info
     '''_getvideourls'''
     def _getvideourls(self, vid, definition, vurl, referrer, request_overrides: dict = None):
+        request_overrides = request_overrides or {}
+        try: return self._getvideourlsp10201ts(vid, definition, vurl, referrer, request_overrides)
+        except: return self._getvideourlsp10201(vid, definition, vurl, referrer, request_overrides)
+    '''_normalizeconfinfo'''
+    def _normalizeconfinfo(self, text):
+        nullified = TencentVQQVideoClient.NULLIFY_RE.sub(r'""', text)
+        dquoted_vals = TencentVQQVideoClient.DOUBLE_QUOTE_VAL_RE.sub(r': "\1"', nullified)
+        dquoted_keys = TencentVQQVideoClient.DOUBLE_QUOTE_KEY_RE.sub(r'"\1": ', dquoted_vals)
+        return dquoted_keys
+    '''_extractvideocoverinfo'''
+    def _extractvideocoverinfo(self, regex: re.Pattern, text: str):
+        result = (None, None); cover_match = regex.search(text)
+        if not cover_match: return result
+        info, cover_group = {}, self._normalizeconfinfo(cover_match.group(1) or cover_match.group(2) or cover_match.group(3))
+        try: cover_info = json.loads(cover_group)
+        except json.JSONDecodeError: return result
+        if not (cover_info and isinstance(cover_info, dict)): return result
+        info['title'] = cover_info.get('title', '') or cover_info.get('title_new', '')
+        info['year'] = cover_info.get('year') or (cover_info.get('publish_date') or '').split('-')[0]
+        info['cover_id'] = cover_info.get('cover_id', '') or cover_info.get('cid', '')
+        info['episode_all'] = int(cover_info.get('episode_all') or 0)
+        type_id = int(cover_info.get('type') or TencentVQQVideoClient.VideoTypeCodes.MOVIE)
+        info['type'] = TencentVQQVideoClient.VQQ_TYPE_CODES.get(type_id, TencentVQQVideoClient.VideoTypes.MOVIE)
+        if cover_info.get('vid') is None: normal_ids = [{'V': vid, 'E': ep, 'defns': {}} for ep, vid in enumerate(cover_info.get('video_ids') or [], start=1)]
+        else: normal_ids = [{'V': cover_info.get('vid'), 'E': 1, 'defns': {}}]
+        info['normal_ids'] = normal_ids; result = (info, cover_match.end())
+        return result
+    '''_getallloadedinfo'''
+    def _getallloadedinfo(self, r_text):
+        conf_info, ep_list, tabs = {}, [], []; match = TencentVQQVideoClient.ALL_LOADED_INFO_RE.search(r_text)
+        if not match: return conf_info, ep_list, tabs
+        matched = match.group(1) or match.group(2)
+        matched_norm = re.sub(TencentVQQVideoClient.EP_LIST_RE, r'[{"list":[[\1]]', matched)
+        matched_norm = self._normalizeconfinfo(matched_norm)
+        try: conf_info = json.loads(matched_norm)
+        except json.JSONDecodeError: return conf_info, ep_list, tabs
+        if not conf_info: return conf_info, ep_list, tabs
+        ep_list = safeextractfromdict(conf_info, ['episodeMain', 'listData', 0, 'list'], [])
+        if ep_list: ep_list = ep_list[0]
+        tabs = safeextractfromdict(conf_info, ['episodeMain', 'listData', 0, 'tabs'], [])
+        return conf_info, ep_list, tabs
+    '''_getpageeplist'''
+    def _getpageeplist(self, cid, vid, request_overrides: dict = None):
+        conf_info, ep_list, tabs, request_overrides = {}, [], [], request_overrides or {}
+        query_params = {'vdevice_guid': TencentVQQVideoClient.DEVICE_ID, 'video_appid': "3000010", 'vversion_name': "8.5.96", 'vversion_platform': "2"}
+        json_payload = {'page_params': {'ad_wechat_authorization_status': "0", 'req_from': "web_vsite", 'ad_exp_ids': "", 'pc_sdk_version': "", 'pc_oaid': "", 'new_mark_label_enabled': "1", 'pc_device_info': "", 'support_pc_yyb_mobile_app_engine': "0", 'pc_wegame_version': "", 'cid': cid, 'history_vid': None, 'vid': vid, 'is_pc_new_detail_page': "0", 'is_from_web_flyflow': "1"}, 'page_bypass_params': {'params': {'caller_id': "3000010", 'platform_id': "2"}, 'scene': "desk_detail", 'app_version': "", 'abtest_bypass_id': TencentVQQVideoClient.DEVICE_ID}, 'page_context': {}}
         try:
-            return self._getvideourlsp10201ts(vid, definition, vurl, referrer, request_overrides)
-        except:
-            return self._getvideourlsp10201(vid, definition, vurl, referrer, request_overrides)
+            (resp := self.post(TencentVQQVideoClient.VIDEO_GETPAGE_URL, json=json_payload, params=query_params)).raise_for_status()
+            try: data = json.loads(resp.text)
+            except json.JSONDecodeError: return conf_info, ep_list, tabs
+            for card in safeextractfromdict(data, ['data', 'CardList'], []):
+                if card['type'] == "pc_introduction": conf_info = safeextractfromdict(card, ['children_list', '0', 'cards', 0, 'params'], {})
+                elif card['type'] == "pc_web_episode_list": tabs = card['params']['tabs']; tabs = json.loads(tabs) if tabs else []; ep_list = [safeextractfromdict(card, ['cards', 0, 'params'], None) for _, card in sorted(card['children_list'].items(), key=lambda x: int(x[0]))]
+                else: continue
+        except: pass
+        return conf_info, ep_list, tabs
+    '''_updatevideocoverinfo'''
+    def _updatevideocoverinfo(self, cover_info, r_text, url_type, request_overrides: dict = None):
+        update_from_eplist_func = lambda normal_ids, ep_list, vid2idx: [normal_ids[vid2idx[epv['vid']]].__setitem__('E', int(epv['title'])) for epv in ep_list]
+        align_eps_func = lambda normal_ids, start, stop, shift: [normal_ids[i].__setitem__('E', normal_ids[i]['E'] + shift) for i in range(start, stop)]
+        conf_info = self._getallloadedinfo(r_text)[0]
+        if not conf_info: return
+        year = safeextractfromdict(conf_info, ['introduction', 'introData', 'list', 0, 'item_params', 'year'], None) or safeextractfromdict(conf_info, ['introduction', 'introData', 'list', 0, 'item_params', 'show_year'], None) or safeextractfromdict(conf_info, ['introductionData', 'introductionData', 'year'], None)
+        if year and (not cover_info['year'] or cover_info['year'] != year): cover_info['year'] = year
+        current_cid, current_vid = conf_info['globalStore']['currentCid'], conf_info['globalStore']['currentVid']
+        conf_info_page, selected_ep_list, tabs = self._getpageeplist(current_cid, current_vid, request_overrides)
+        if len(selected_ep_list) >= len(cover_info['normal_ids']): cover_info['normal_ids'] = [{'V': item['vid'], 'E': ep, 'defns': {}, 'title': item.get('play_title') or item.get('union_title', '') if cover_info['type'] not in [TencentVQQVideoClient.VideoTypes.TV, ] else ''} for ep, item in enumerate(selected_ep_list, start=1)]
+        if conf_info_page: (not cover_info['year'] and cover_info.__setitem__('year', conf_info_page.get('year') or "")); (not cover_info['title'] and cover_info.__setitem__('title', conf_info_page.get('title') or ""))
+        if not cover_info['episode_all'] or cover_info['episode_all'] == len(cover_info['normal_ids']) or not selected_ep_list or not str(selected_ep_list[0].get('title', '')).isdecimal(): return
+        v2i = {vi['V']: idx for idx, vi in enumerate(cover_info['normal_ids'])}
+        if url_type == TencentVQQVideoClient.VideoURLType.PAGE or not tabs: update_from_eplist_func(cover_info['normal_ids'], selected_ep_list, v2i); return
+        delay_request = SpinWithBackoff(); ep, shift = 0, 0
+        for tab in sorted(tabs, key=lambda tab: int(tab['begin'])):
+            page_context = TencentVQQVideoClient.PAGE_CONTEXT_RE.search(tab['page_context'])
+            if not page_context: return
+            cid, size = page_context.group('cid'), int(page_context.group('size'))
+            if tab['selected']: update_from_eplist_func(cover_info['normal_ids'], selected_ep_list, v2i)
+            else:
+                if not (url_type == TencentVQQVideoClient.VideoURLType.COVER):
+                    align_eps_func(cover_info['normal_ids'], ep, ep + size, shift)
+                else:
+                    if delay_request.nth > (TencentVQQVideoClient.MAX_PAGETAB_REQS - 1): align_eps_func(cover_info['normal_ids'], ep, len(cover_info['normal_ids']), shift); return
+                    delay_request.sleep(); ep_list = self._getpageeplist(cid, cover_info['normal_ids'][ep]['V'], request_overrides)[1]
+                    if not ep_list: align_eps_func(cover_info['normal_ids'], ep, len(cover_info['normal_ids']), shift); return
+                    update_from_eplist_func(cover_info['normal_ids'], ep_list, v2i)
+            ep += size; shift = cover_info['normal_ids'][ep-1]['E'] - ep
+    '''_getcoverinfo'''
+    def _getcoverinfo(self, cover_url, url_type, request_overrides: dict = None):
+        try:
+            (resp := self.get(cover_url)).raise_for_status(); resp.encoding = 'utf-8'
+            try: image_url = BeautifulSoup(resp.text, 'lxml').find('meta', {'itemprop': 'thumbnailUrl'}).get('content')
+            except Exception: image_url = None
+            info, pos_end = self._extractvideocoverinfo(TencentVQQVideoClient.COVER_PAT_RE, resp.text)
+            if not (info and info['normal_ids']): info, _ = self._extractvideocoverinfo(TencentVQQVideoClient.VIDEO_INFO_RE, resp.text[pos_end:] if info else resp.text)
+            if not info: return info
+            self._updatevideocoverinfo(info, resp.text, url_type, request_overrides)
+            if not info['episode_all']: info['episode_all'] = len(info['normal_ids']) if info['normal_ids'] else 1
+            info['referrer'], info['image_url'] = cover_url, image_url
+        except: info = None; pass
+        return info
+    '''_getvideocoverinfo'''
+    def _getvideocoverinfo(self, videourl, request_overrides: dict = None):
+        for typ, pat in enumerate(TencentVQQVideoClient.VIDEO_URL_PATS, 1):
+            match = pat.match(videourl)
+            if not match: continue
+            if typ in {1, 2}: cover_info = self._getcoverinfo(videourl, url_type=TencentVQQVideoClient.VideoURLType.COVER, request_overrides=request_overrides)
+            elif typ in {3}: video_id = match.group(2); (cover_info := self._getcoverinfo(videourl, url_type=TencentVQQVideoClient.VideoURLType.PAGE, request_overrides=request_overrides)) and cover_info.__setitem__('normal_ids', [dic for dic in cover_info['normal_ids'] if dic['V'] == video_id])
+            else: video_id = match.group(1); (cover_info := self._getcoverinfo(videourl, url_type=TencentVQQVideoClient.VideoURLType.PAGE, request_overrides=request_overrides)) and cover_info.__setitem__('normal_ids', ([{'V': video_id, 'E': 1, 'defns': {}}] if not cover_info['normal_ids'] else [dic for dic in cover_info['normal_ids'] if dic['V'] == video_id]))
+            if cover_info:
+                cover_info['url'] = videourl; cover_info['url_type'] = TencentVQQVideoClient.VideoURLType.COVER if typ in {1, 2} else TencentVQQVideoClient.VideoURLType.PAGE
+                for vi in cover_info['normal_ids']:
+                    if cover_info['cover_id'] and cover_info['cover_id'] != vi['V']: vi['url'] = "https://v.qq.com/x/cover/%s/%s.html" % (cover_info['cover_id'], vi['V']); vi['referrer'] = vi['url']
+                    else: vi['url'] = "https://v.qq.com/x/page/%s.html" % vi['V']; vi['referrer'] = cover_info['referrer']
+            return cover_info
     '''parsefromurl'''
     @useparseheaderscookies
     def parsefromurl(self, url: str, request_overrides: dict = None):
@@ -405,45 +417,16 @@ class TencentVQQVideoClient(BaseVideoClient):
         # try parse
         video_infos = []
         try:
-            for typ, pat in enumerate(TencentVQQVideoClient.VIDEO_URL_PATS, 1):
-                match = pat.match(url)
-                if not match: continue
-                if typ in [1, 2]:
-                    basic_info = self._parsebasicinfo(url, url_type=TencentVQQVideoClient.VideoURLType.COVER, request_overrides=request_overrides)
-                elif typ == 3:
-                    video_id = match.group(2)
-                    basic_info = self._parsebasicinfo(url, url_type=TencentVQQVideoClient.VideoURLType.PAGE, request_overrides=request_overrides)
-                    if basic_info: basic_info['normal_ids'] = [dic for dic in basic_info['normal_ids'] if dic['V'] == video_id]
-                else:
-                    video_id = match.group(1)
-                    basic_info = self._parsebasicinfo(url, url_type=TencentVQQVideoClient.VideoURLType.PAGE, request_overrides=request_overrides)
-                    if basic_info:
-                        if not basic_info['normal_ids']: basic_info['normal_ids'] = [{'V': video_id, 'E': 1, 'defns': {}}]
-                        else: basic_info['normal_ids'] = [dic for dic in basic_info['normal_ids'] if dic['V'] == video_id]
-                break
-            basic_info['url'] = url
-            basic_info['url_type'] = TencentVQQVideoClient.VideoURLType.COVER if typ in [1, 2] else TencentVQQVideoClient.VideoURLType.PAGE
-            for vi in basic_info['normal_ids']:
-                if basic_info['cover_id'] and basic_info['cover_id'] != vi['V']:
-                    vi['url'] = "https://v.qq.com/x/cover/%s/%s.html" % (basic_info['cover_id'], vi['V'])
-                    vi['referrer'] = vi['url']
-                else:
-                    vi['url'] = "https://v.qq.com/x/page/%s.html" % vi['V']
-                    vi['referrer'] = basic_info['referrer']
-            video_title = basic_info['title'] or null_backup_title
-            video_title = legalizestring(video_title, replace_null_string=null_backup_title).removesuffix('.')
-            for _, vinfo_hit_vid in enumerate(basic_info['normal_ids']):
-                raw_data = copy.deepcopy(basic_info)
-                video_info_page = copy.deepcopy(video_info)
-                format_name, ext, urls = self._getvideourls(vinfo_hit_vid['V'], 'uhd', vinfo_hit_vid['url'], vinfo_hit_vid['referrer'])
+            basic_info = self._getvideocoverinfo(videourl=url, request_overrides=request_overrides)
+            video_title = legalizestring(basic_info['title'] or null_backup_title, replace_null_string=null_backup_title).removesuffix('.')
+            for normal_id in basic_info['normal_ids']:
+                raw_data = copy.deepcopy(basic_info); video_info_page = copy.deepcopy(video_info)
+                format_name, ext, urls = self._getvideourls(normal_id['V'], 'uhd', normal_id['url'], normal_id['referrer'])
+                if not format_name: continue
                 raw_data['download_info'] = {'format_name': format_name, 'ext': ext, 'urls': urls}
-                download_url = os.path.join(self.work_dir, self.source, f"{raw_data['cover_id']}_{vinfo_hit_vid['V']}.m3u8")
+                download_url = os.path.join(self.work_dir, self.source, f"{raw_data['cover_id']}-{normal_id['V']}.m3u8")
                 writevodm3u8fortencent(segments=urls, out_path=download_url, pick="best", strategy="global_host", probe_timeout=3.0, samples_per_host=2, probe_workers=16, probe_method="head_then_range_get")
-                video_info_page.update(dict(
-                    raw_data=raw_data, download_url=download_url, title=f'ep{len(video_infos)+1}-{video_title}' if len(basic_info['normal_ids']) > 1 else video_title, 
-                    file_path=os.path.join(self.work_dir, self.source, f'ep{len(video_infos)+1}-{video_title}' if len(basic_info['normal_ids']) > 1 else video_title), 
-                    ext=ext, identifier=f"{raw_data['cover_id']}-{vinfo_hit_vid['V']}", enable_nm3u8dlre=True
-                ))
+                video_info_page.update(dict(raw_data=raw_data, download_url=download_url, title=f'ep{len(video_infos)+1}-{video_title}' if len(basic_info['normal_ids']) > 1 else video_title, file_path=os.path.join(self.work_dir, self.source, f'ep{len(video_infos)+1}-{video_title}' if len(basic_info['normal_ids']) > 1 else video_title), ext=ext, identifier=f"{raw_data['cover_id']}-{normal_id['V']}", enable_nm3u8dlre=True, cover_url=raw_data.get('image_url')))
                 video_infos.append(video_info_page)
         except Exception as err:
             err_msg = f'{self.source}.parsefromurl >>> {url} (Error: {err})'
