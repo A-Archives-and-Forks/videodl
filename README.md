@@ -754,7 +754,13 @@ If you use this project in your research, please cite the repository.
 
 # 🌟 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=CharlesPikachu/videodl&type=date&legend=top-left)](https://www.star-history.com/#CharlesPikachu/videodl&type=date&legend=top-left)
+<a href="https://www.star-history.com/?repos=CharlesPikachu%2Fvideodl&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=CharlesPikachu/videodl&type=date&theme=dark&legend=top-left&sealed_token=QnlmPCuc75V4LZ04rTPaPvK10yylyHoizFC__Cy5sFYZ1YLY4DAdnHtPb5phAKOyuB5TyK9T3To7Sjd3CJ96KBYABMnxGECVwQeoNrgwArLZeHsGfX-_Kg" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=CharlesPikachu/videodl&type=date&legend=top-left&sealed_token=QnlmPCuc75V4LZ04rTPaPvK10yylyHoizFC__Cy5sFYZ1YLY4DAdnHtPb5phAKOyuB5TyK9T3To7Sjd3CJ96KBYABMnxGECVwQeoNrgwArLZeHsGfX-_Kg" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=CharlesPikachu/videodl&type=date&legend=top-left&sealed_token=QnlmPCuc75V4LZ04rTPaPvK10yylyHoizFC__Cy5sFYZ1YLY4DAdnHtPb5phAKOyuB5TyK9T3To7Sjd3CJ96KBYABMnxGECVwQeoNrgwArLZeHsGfX-_Kg" />
+ </picture>
+</a>
 
 
 # ☕ Appreciation (赞赏 / 打赏)
